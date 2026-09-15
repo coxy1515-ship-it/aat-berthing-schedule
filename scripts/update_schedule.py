@@ -16,7 +16,7 @@ import datetime
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -81,10 +81,20 @@ def render(appleton_url, appleton_label, webb_url, webb_label):
     now = datetime.datetime.now(datetime.timezone.utc)
     stamp = now.strftime("%d %b %Y, %H:%M UTC")
 
+    def embed_url(pdf_url):
+        # AAT's server blocks its PDFs from being iframed directly
+        # (X-Frame-Options), so route through Google's viewer instead,
+        # which fetches and renders the PDF itself.
+        return "https://docs.google.com/viewer?embedded=true&url=" + quote(
+            pdf_url, safe=""
+        )
+
     html = (
         template.replace("{{APPLETON_URL}}", appleton_url)
+        .replace("{{APPLETON_EMBED_URL}}", embed_url(appleton_url))
         .replace("{{APPLETON_LABEL}}", appleton_label)
         .replace("{{WEBB_URL}}", webb_url)
+        .replace("{{WEBB_EMBED_URL}}", embed_url(webb_url))
         .replace("{{WEBB_LABEL}}", webb_label)
         .replace("{{UPDATED_STAMP}}", stamp)
     )
@@ -106,3 +116,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
