@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 """
-Fetches AAT's berthing schedule resource page, finds the current
-Appleton Dock and Webb Dock West PDF links, and rewrites docs/index.html
-to embed whatever the two current PDFs are.
+Fetches AAT's berthing schedule page, downloads the current Appleton
+Dock and Webb Dock West PDFs into docs/, and rewrites docs/index.html
+to display our own copies.
 
-This does NOT download or parse the PDFs themselves - it just finds
-today's PDF URLs and points a couple of <iframe>s at them, so the page
-always shows whatever AAT currently has published, in AAT's own format.
-
-Run manually:  python scripts/update_schedule.py
-Run on a schedule via .github/workflows/update.yml
+Serving the PDFs ourselves (rather than hotlinking or routing through
+Google's viewer) means no third-party viewer to fail and no
+cross-origin framing restrictions.
 """
 
 import datetime
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urljoin, quote
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -34,13 +31,14 @@ HEADERS = {
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = ROOT / "scripts" / "template.html"
-OUTPUT_PATH = ROOT / "docs" / "index.html"
+DOCS_DIR = ROOT / "docs"
+OUTPUT_PATH = DOCS_DIR / "index.html"
 
-DATE_RE = re.compile(r"\d{1,2}[./]\d{1,2}[./]\d{2,4}")
+APPLETON_PDF = "appleton-dock.pdf"
+WEBB_PDF = "webb-dock-west.pdf"
 
 
 def fetch_links():
-    """Return (appleton_url, appleton_label, webb_url, webb_label)."""
     resp = requests.get(SOURCE_URL, headers=HEADERS, timeout=30)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -55,7 +53,6 @@ def fetch_links():
         text = a.get_text(" ", strip=True)
         low = text.lower()
         if "berth" not in low:
-            # Only interested in berthing schedule links
             continue
         if "appleton" in low and appleton is None:
             appleton = (href, text)
@@ -76,26 +73,26 @@ def fetch_links():
     return appleton[0], appleton[1], webb[0], webb[1]
 
 
-def render(appleton_url, appleton_label, webb_url, webb_label):
-    template = TEMPLATE_PATH.read_text(encoding="utf-8")
-    now = datetime.datetime.now(datetime.timezone.utc)
-    stamp = now.strftime("%d %b %Y, %H:%M UTC")
+def download_pdf(url, dest_name):
+    resp = requests.get(url, headers=HEADERS, timeout=60)
+    resp.raise_for_status()
+    data = resp.content
+    if not data.startswith(b"%PDF"):
+        raise RuntimeError(f"{url} did not return a PDF (got {len(data)} bytes).")
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    (DOCS_DIR / dest_name).write_bytes(data)
+    print(f"Saved {dest_name} ({len(data):,} bytes)")
 
-    def embed_url(pdf_url):
-        # AAT's server blocks its PDFs from being iframed directly
-        # (X-Frame-Options), so route through Google's viewer instead,
-        # which fetches and renders the PDF itself.
-        return "https://docs.google.com/viewer?embedded=true&url=" + quote(
-            pdf_url, safe=""
-        )
+
+def render(appleton_source, webb_source):
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%d %b %Y, %H:%M UTC")
 
     html = (
-        template.replace("{{APPLETON_URL}}", appleton_url)
-        .replace("{{APPLETON_EMBED_URL}}", embed_url(appleton_url))
-        .replace("{{APPLETON_LABEL}}", appleton_label)
-        .replace("{{WEBB_URL}}", webb_url)
-        .replace("{{WEBB_EMBED_URL}}", embed_url(webb_url))
-        .replace("{{WEBB_LABEL}}", webb_label)
+        template.replace("{{APPLETON_PDF}}", APPLETON_PDF)
+        .replace("{{WEBB_PDF}}", WEBB_PDF)
+        .replace("{{APPLETON_SOURCE}}", appleton_source)
+        .replace("{{WEBB_SOURCE}}", webb_source)
         .replace("{{UPDATED_STAMP}}", stamp)
     )
     OUTPUT_PATH.write_text(html, encoding="utf-8")
@@ -103,18 +100,18 @@ def render(appleton_url, appleton_label, webb_url, webb_label):
 
 def main():
     try:
-        appleton_url, appleton_label, webb_url, webb_label = fetch_links()
+        appleton_url, _, webb_url, _ = fetch_links()
+        download_pdf(appleton_url, APPLETON_PDF)
+        download_pdf(webb_url, WEBB_PDF)
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    render(appleton_url, appleton_label, webb_url, webb_label)
-    print(f"Appleton: {appleton_url}")
-    print(f"Webb Dock West: {webb_url}")
+    render(appleton_url, webb_url)
+    print(f"Appleton source: {appleton_url}")
+    print(f"Webb Dock West source: {webb_url}")
     print("docs/index.html updated.")
 
 
 if __name__ == "__main__":
     main()
-
-
